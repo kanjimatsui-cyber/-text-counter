@@ -59,9 +59,25 @@
     }
   </style>
   <script>
+    function xStyleCount(value) {
+      var urlPattern = /(?:https?:\/\/|www\.)[^\s]+/gi;
+      var total = 0;
+      var lastIndex = 0;
+      var match;
+
+      while ((match = urlPattern.exec(value)) !== null) {
+        total += Array.from(value.slice(lastIndex, match.index)).length;
+        total += 23;
+        lastIndex = match.index + match[0].length;
+      }
+
+      total += Array.from(value.slice(lastIndex)).length;
+      return total;
+    }
+
     function updateCount(el) {
       var counter = document.getElementById('count');
-      counter.textContent = Array.from(el.value).length;
+      counter.textContent = xStyleCount(el.value);
       el.style.height = 'auto';
       el.style.height = Math.max(220, el.scrollHeight) + 'px';
     }
@@ -76,4 +92,3 @@
   </main>
 </body>
 </html>
-<!-- trigger github pages rebuild -->
