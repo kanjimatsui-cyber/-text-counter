@@ -57,38 +57,43 @@
       pointer-events: none;
       user-select: none;
     }
+    .count.over {
+      color: #f4212e;
+    }
   </style>
-  <script>
-    function xStyleCount(value) {
-      var urlPattern = /(?:https?:\/\/|www\.)[^\s]+/gi;
-      var total = 0;
-      var lastIndex = 0;
-      var match;
-
-      while ((match = urlPattern.exec(value)) !== null) {
-        total += Array.from(value.slice(lastIndex, match.index)).length;
-        total += 23;
-        lastIndex = match.index + match[0].length;
-      }
-
-      total += Array.from(value.slice(lastIndex)).length;
-      return total;
-    }
-
-    function updateCount(el) {
-      var counter = document.getElementById('count');
-      counter.textContent = xStyleCount(el.value);
-      el.style.height = 'auto';
-      el.style.height = Math.max(220, el.scrollHeight) + 'px';
-    }
-  </script>
 </head>
 <body>
   <main class="wrap">
     <div class="composer">
-      <textarea id="text" aria-label="文字入力欄" oninput="updateCount(this)" autofocus></textarea>
-      <div class="count" id="count">0</div>
+      <textarea id="text" aria-label="文字入力欄" autofocus></textarea>
+      <div class="count" id="count">0 / 140</div>
     </div>
   </main>
+
+  <script type="module">
+    import twitterText from 'https://cdn.jsdelivr.net/npm/twitter-text@3.1.0/+esm';
+
+    const text = document.getElementById('text');
+    const counter = document.getElementById('count');
+
+    function formatXEquivalent(weightedLength) {
+      const value = weightedLength / 2;
+      return Number.isInteger(value) ? String(value) : value.toFixed(1);
+    }
+
+    function updateCount() {
+      const result = twitterText.parseTweet(text.value);
+      const xEquivalent = result.weightedLength / 2;
+
+      counter.textContent = `${formatXEquivalent(result.weightedLength)} / 140`;
+      counter.classList.toggle('over', xEquivalent > 140);
+
+      text.style.height = 'auto';
+      text.style.height = Math.max(220, text.scrollHeight) + 'px';
+    }
+
+    text.addEventListener('input', updateCount);
+    updateCount();
+  </script>
 </body>
 </html>
