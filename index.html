@@ -48,7 +48,6 @@
       line-height: 1.45;
       display: block;
     }
-    textarea::placeholder { color: #536471; }
     .count {
       position: absolute;
       right: 16px;
@@ -87,7 +86,7 @@
 <body>
   <main class="wrap">
     <div class="composer">
-      <textarea id="text" aria-label="文字入力欄" placeholder="いまどうしてる？" oninput="updateCount(this)" autofocus></textarea>
+      <textarea id="text" aria-label="文字入力欄" oninput="updateCount(this)" autofocus></textarea>
       <div class="count" id="count">0</div>
     </div>
   </main>
