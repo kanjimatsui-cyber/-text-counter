@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#ffffff">
-  <title>Text Counter</title>
+  <title>下書きくん</title>
   <style>
     * { box-sizing: border-box; }
     html, body {
@@ -16,17 +16,67 @@
     }
     body {
       min-height: 100dvh;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      padding: 16px;
+      padding:
+        max(14px, env(safe-area-inset-top))
+        max(14px, env(safe-area-inset-right))
+        max(18px, env(safe-area-inset-bottom))
+        max(14px, env(safe-area-inset-left));
     }
     .wrap {
       width: 100%;
       max-width: 600px;
+      margin: 0 auto;
     }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 22px;
+      line-height: 1.25;
+      font-weight: 700;
+      text-align: left;
+      white-space: nowrap;
+    }
+    .draft-controls {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    select,
+    button {
+      min-height: 44px;
+      border: 1px solid #cfd9de;
+      border-radius: 10px;
+      background: #fff;
+      color: #0f1419;
+      font: inherit;
+      font-size: 16px;
+    }
+    select {
+      width: 100%;
+      min-width: 0;
+      padding: 0 36px 0 12px;
+    }
+    button {
+      padding: 0 14px;
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+    button:active { background: #f7f9f9; }
+    button:disabled {
+      cursor: default;
+      opacity: 0.45;
+    }
+    .count {
+      min-height: 20px;
+      margin: 0 0 6px;
+      font-size: 14px;
+      line-height: 20px;
+      color: #536471;
+      user-select: none;
+    }
+    .count.over { color: #f4212e; }
     .composer {
-      position: relative;
       width: 100%;
       min-height: 220px;
       border: 1px solid #cfd9de;
@@ -42,58 +92,406 @@
       resize: none;
       background: transparent;
       color: #0f1419;
-      padding: 18px 18px 48px;
+      padding: 18px;
       font: inherit;
       font-size: 20px;
       line-height: 1.45;
       display: block;
     }
-    .count {
-      position: absolute;
-      right: 16px;
-      bottom: 14px;
-      font-size: 14px;
-      color: #536471;
-      pointer-events: none;
-      user-select: none;
+    .bottom-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 10px;
     }
-    .count.over {
-      color: #f4212e;
+    .save-button { flex: 1; }
+    .delete-button { flex: 0 0 auto; }
+    .status {
+      min-height: 18px;
+      margin-top: 6px;
+      font-size: 12px;
+      line-height: 18px;
+      color: #536471;
+    }
+    .storage-warning { color: #b54708; }
+    [hidden] { display: none !important; }
+
+    @media (max-width: 360px) {
+      h1 { font-size: 20px; }
+      textarea { font-size: 18px; }
+      select, button { font-size: 15px; }
     }
   </style>
 </head>
 <body>
   <main class="wrap">
+    <h1>下書きくん</h1>
+
+    <div class="draft-controls">
+      <select id="draftSelect" aria-label="保存済み下書き">
+        <option value="">下書き ▼</option>
+      </select>
+      <button type="button" id="newButton">新規</button>
+    </div>
+
+    <div class="count" id="count">0 / 140</div>
+
     <div class="composer">
       <textarea id="text" aria-label="文字入力欄" autofocus></textarea>
-      <div class="count" id="count">0 / 140</div>
     </div>
+
+    <div class="bottom-actions">
+      <button type="button" class="save-button" id="saveButton">下書き保存</button>
+      <button type="button" class="delete-button" id="deleteButton" hidden>削除</button>
+    </div>
+    <div class="status" id="status" aria-live="polite"></div>
   </main>
 
-  <script type="module">
-    import twitterText from 'https://cdn.jsdelivr.net/npm/twitter-text@3.1.0/+esm';
+  <script>
+    (() => {
+      'use strict';
 
-    const text = document.getElementById('text');
-    const counter = document.getElementById('count');
+      const STORAGE_KEY = 'draft-kun-drafts';
+      const TEN_DAYS_MS = 10 * 24 * 60 * 60 * 1000;
+      const MAX_DRAFTS = 50;
+      const URL_WEIGHT = 23;
 
-    function formatXEquivalent(weightedLength) {
-      const value = weightedLength / 2;
-      return Number.isInteger(value) ? String(value) : value.toFixed(1);
-    }
+      const text = document.getElementById('text');
+      const counter = document.getElementById('count');
+      const draftSelect = document.getElementById('draftSelect');
+      const newButton = document.getElementById('newButton');
+      const saveButton = document.getElementById('saveButton');
+      const deleteButton = document.getElementById('deleteButton');
+      const status = document.getElementById('status');
 
-    function updateCount() {
-      const result = twitterText.parseTweet(text.value);
-      const xEquivalent = result.weightedLength / 2;
+      let activeDraftId = null;
+      let storageEnabled = canUseLocalStorage();
+      let drafts = [];
 
-      counter.textContent = `${formatXEquivalent(result.weightedLength)} / 140`;
-      counter.classList.toggle('over', xEquivalent > 140);
+      const segmenter = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function'
+        ? new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+        : null;
+      const emojiPattern = /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3/u;
+      const urlPattern = /(?:https?:\/\/|www\.)[^\s<>{}\[\]"']+|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?:\/[^\s<>{}\[\]"']*)?/giu;
 
-      text.style.height = 'auto';
-      text.style.height = Math.max(220, text.scrollHeight) + 'px';
-    }
+      function canUseLocalStorage() {
+        try {
+          const testKey = '__draft_kun_storage_test__';
+          localStorage.setItem(testKey, '1');
+          localStorage.removeItem(testKey);
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }
 
-    text.addEventListener('input', updateCount);
-    updateCount();
+      function setStatus(message, warning = false) {
+        status.textContent = message;
+        status.classList.toggle('storage-warning', warning);
+      }
+
+      function isValidDraft(value) {
+        return value &&
+          typeof value.id === 'string' &&
+          typeof value.text === 'string' &&
+          typeof value.createdAt === 'string' &&
+          typeof value.updatedAt === 'string' &&
+          Number.isFinite(Date.parse(value.updatedAt));
+      }
+
+      function readDrafts() {
+        if (!storageEnabled) return [];
+
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (!raw) return [];
+          const parsed = JSON.parse(raw);
+          return Array.isArray(parsed) ? parsed.filter(isValidDraft) : [];
+        } catch (_) {
+          return [];
+        }
+      }
+
+      function writeDrafts(nextDrafts) {
+        if (!storageEnabled) return false;
+
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(nextDrafts));
+          return true;
+        } catch (_) {
+          storageEnabled = false;
+          saveButton.disabled = true;
+          setStatus('このブラウザでは下書き保存を利用できません。', true);
+          return false;
+        }
+      }
+
+      function cleanDrafts() {
+        if (!storageEnabled) {
+          drafts = [];
+          return;
+        }
+
+        const now = Date.now();
+        const stored = readDrafts();
+        const cleaned = stored
+          .filter(draft => now - Date.parse(draft.updatedAt) < TEN_DAYS_MS)
+          .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+          .slice(0, MAX_DRAFTS);
+
+        drafts = cleaned;
+
+        if (JSON.stringify(stored) !== JSON.stringify(cleaned)) {
+          writeDrafts(cleaned);
+        }
+
+        if (activeDraftId && !drafts.some(draft => draft.id === activeDraftId)) {
+          activeDraftId = null;
+          deleteButton.hidden = true;
+        }
+      }
+
+      function makeDraftId() {
+        if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+          return window.crypto.randomUUID();
+        }
+        return `draft-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      }
+
+      function formatDate(isoString) {
+        const date = new Date(isoString);
+        const pad = value => String(value).padStart(2, '0');
+        return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+      }
+
+      function makeSnippet(value) {
+        const compact = value.replace(/\s+/g, ' ').trim();
+        const chars = Array.from(compact);
+        const limit = 28;
+        return chars.length > limit ? `${chars.slice(0, limit).join('')}…` : compact;
+      }
+
+      function renderDraftOptions() {
+        cleanDrafts();
+
+        draftSelect.replaceChildren();
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = '下書き ▼';
+        draftSelect.appendChild(placeholder);
+
+        if (!storageEnabled) {
+          const option = document.createElement('option');
+          option.disabled = true;
+          option.textContent = '下書き保存は利用できません';
+          draftSelect.appendChild(option);
+          draftSelect.value = '';
+          return;
+        }
+
+        if (drafts.length === 0) {
+          const option = document.createElement('option');
+          option.disabled = true;
+          option.textContent = '下書きはありません';
+          draftSelect.appendChild(option);
+          draftSelect.value = '';
+          return;
+        }
+
+        for (const draft of drafts) {
+          const option = document.createElement('option');
+          option.value = draft.id;
+          option.textContent = `${formatDate(draft.updatedAt)}　${makeSnippet(draft.text)}`;
+          draftSelect.appendChild(option);
+        }
+        draftSelect.value = '';
+      }
+
+      function resetEditor() {
+        activeDraftId = null;
+        text.value = '';
+        deleteButton.hidden = true;
+        updateCount();
+        draftSelect.value = '';
+        setStatus('');
+        text.focus();
+      }
+
+      function loadDraft(id) {
+        cleanDrafts();
+        const draft = drafts.find(item => item.id === id);
+        if (!draft) {
+          renderDraftOptions();
+          setStatus('この下書きは期限切れか、削除されています。');
+          return;
+        }
+
+        activeDraftId = draft.id;
+        text.value = draft.text;
+        deleteButton.hidden = false;
+        updateCount();
+        draftSelect.value = '';
+        setStatus('');
+        text.focus();
+      }
+
+      function saveDraft() {
+        const value = text.value;
+        if (!value.trim()) return;
+        if (!storageEnabled) {
+          setStatus('このブラウザでは下書き保存を利用できません。', true);
+          return;
+        }
+
+        cleanDrafts();
+        const now = new Date().toISOString();
+        const existingIndex = activeDraftId
+          ? drafts.findIndex(draft => draft.id === activeDraftId)
+          : -1;
+
+        if (existingIndex >= 0) {
+          drafts[existingIndex] = {
+            ...drafts[existingIndex],
+            text: value,
+            updatedAt: now
+          };
+        } else {
+          const newDraft = {
+            id: makeDraftId(),
+            text: value,
+            createdAt: now,
+            updatedAt: now
+          };
+          activeDraftId = newDraft.id;
+          drafts.push(newDraft);
+        }
+
+        drafts = drafts
+          .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+          .slice(0, MAX_DRAFTS);
+
+        if (writeDrafts(drafts)) {
+          deleteButton.hidden = false;
+          renderDraftOptions();
+          setStatus('保存しました。最終保存から10日間保持します。');
+        }
+      }
+
+      function deleteDraft() {
+        if (!activeDraftId || !storageEnabled) return;
+        if (!window.confirm('この下書きを削除しますか？')) return;
+
+        cleanDrafts();
+        drafts = drafts.filter(draft => draft.id !== activeDraftId);
+        if (writeDrafts(drafts)) {
+          resetEditor();
+          renderDraftOptions();
+          setStatus('下書きを削除しました。');
+        }
+      }
+
+      function isSingleWeightCodePoint(codePoint) {
+        return (codePoint >= 0 && codePoint <= 4351) ||
+          (codePoint >= 8192 && codePoint <= 8205) ||
+          (codePoint >= 8208 && codePoint <= 8223) ||
+          (codePoint >= 8242 && codePoint <= 8247);
+      }
+
+      function emojiSegments(value) {
+        const map = new Map();
+        if (!segmenter) return map;
+
+        for (const part of segmenter.segment(value)) {
+          if (emojiPattern.test(part.segment)) {
+            map.set(part.index, part.segment.length);
+          }
+        }
+        return map;
+      }
+
+      function urlSegments(value) {
+        const map = new Map();
+        urlPattern.lastIndex = 0;
+        let match;
+        while ((match = urlPattern.exec(value)) !== null) {
+          const raw = match[0];
+          const isExplicitUrl = /^(?:https?:\/\/|www\.)/iu.test(raw);
+          if (!isExplicitUrl && match.index > 0 && value.charAt(match.index - 1) === '@') {
+            continue;
+          }
+
+          const trimmed = raw.replace(/[.,!?;:、。）」』】]+$/u, '');
+          if (trimmed) map.set(match.index, trimmed.length);
+        }
+        return map;
+      }
+
+      function getWeightedLength(value) {
+        const normalized = typeof String.prototype.normalize === 'function'
+          ? value.normalize('NFC')
+          : value;
+        const urls = urlSegments(normalized);
+        const emojis = emojiSegments(normalized);
+        let weightedLength = 0;
+
+        for (let index = 0; index < normalized.length;) {
+          const urlLength = urls.get(index);
+          if (urlLength) {
+            weightedLength += URL_WEIGHT;
+            index += urlLength;
+            continue;
+          }
+
+          const emojiLength = emojis.get(index);
+          if (emojiLength) {
+            weightedLength += 2;
+            index += emojiLength;
+            continue;
+          }
+
+          const codePoint = normalized.codePointAt(index);
+          weightedLength += isSingleWeightCodePoint(codePoint) ? 1 : 2;
+          index += codePoint > 0xffff ? 2 : 1;
+        }
+
+        return weightedLength;
+      }
+
+      function formatXEquivalent(weightedLength) {
+        const value = weightedLength / 2;
+        return Number.isInteger(value) ? String(value) : value.toFixed(1);
+      }
+
+      function updateCount() {
+        const weightedLength = getWeightedLength(text.value);
+        const xEquivalent = weightedLength / 2;
+
+        counter.textContent = `${formatXEquivalent(weightedLength)} / 140`;
+        counter.classList.toggle('over', xEquivalent > 140);
+
+        text.style.height = 'auto';
+        text.style.height = Math.max(220, text.scrollHeight) + 'px';
+      }
+
+      text.addEventListener('input', updateCount);
+      draftSelect.addEventListener('change', event => {
+        const id = event.target.value;
+        if (id) loadDraft(id);
+      });
+      draftSelect.addEventListener('focus', renderDraftOptions);
+      newButton.addEventListener('click', resetEditor);
+      saveButton.addEventListener('click', saveDraft);
+      deleteButton.addEventListener('click', deleteDraft);
+
+      if (!storageEnabled) {
+        saveButton.disabled = true;
+        setStatus('このブラウザでは下書き保存を利用できません。文字数カウンターは使用できます。', true);
+      }
+
+      cleanDrafts();
+      renderDraftOptions();
+      updateCount();
+    })();
   </script>
 </body>
 </html>
